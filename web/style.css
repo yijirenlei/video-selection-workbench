@@ -268,3 +268,33 @@ kbd { font-family: var(--mono); font-size: .74rem; border: 1px solid currentColo
   .mode-row { grid-template-columns: minmax(75px, auto) minmax(0, 1fr); }
   .mode-row button { grid-column: 1 / -1; }
 }
+
+.workflow-tab { display: flex; align-items: center; gap: 7px; background: transparent; color: inherit; border: 0;
+  padding: 4px 2px; white-space: nowrap; font-size: inherit; border-radius: 6px; }
+.workflow-tab:hover, .workflow-tab[aria-current="step"] { color: var(--accent); }
+.workflow-tab[aria-current="step"] span { background: var(--accent); color: #222713; border-color: var(--accent); }
+.fine-heading select, .product-controls select, .product-dialog select {
+  min-width: 0; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px; font: .8rem var(--sans);
+}
+#fine-mark { display: block; width: 100%; min-height: 41px; margin-top: 5px; }
+.segment:hover { border-color: #71884d; }
+.segment-hover { position: fixed; z-index: 10; width: min(210px, 65vw); height: auto; max-height: 232px;
+  border: 1px solid #8fa567; border-radius: 8px; overflow: hidden; background: var(--stage); pointer-events: none;
+  box-shadow: 0 8px 24px #0009; }
+.segment-hover video { display: block; width: 100%; max-height: 230px; object-fit: contain; }
+.product-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 12px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border); }
+.product-controls label, .product-dialog label { font-size: .875rem; }
+.product-controls #product-active { font-size: .8rem; }
+.product-dialog { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 28px); color: var(--text);
+  border: 1px solid #647453; border-radius: 13px; padding: 17px; background: var(--panel); }
+.product-dialog::backdrop { background: #0b0d0bcc; }
+.product-dialog form { display: grid; gap: 8px; min-width: 0; }
+.product-dialog header { justify-content: space-between; margin-bottom: 5px; }
+.product-dialog input[type="text"] { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+  padding: 8px; width: 100%; min-width: 0; font-size: .875rem; }
+.product-dialog input[type="file"] { width: 100%; font-size: .8rem; }
+.history-row { display: flex; gap: 8px; }
+.history-row select { flex: 1; }
+.product-buttons { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
