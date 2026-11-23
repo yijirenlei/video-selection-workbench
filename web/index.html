@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="抖音参考视频逐帧选段、拼接预览与 Seedance 2.5 提示词。">
+  <title>视频选片台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="identity">
+      <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div><h1>视频选片台</h1><p>抖音参考视频 · Seedance 2.5</p></div>
+    </div>
+    <div class="local"><span></span>本地工作台</div>
+  </header>
+  <nav class="workflow" aria-label="工作步骤">
+    <ol>
+      <li data-step="1"><span>1</span>导入</li>
+      <li data-step="2"><span>2</span>选段和预览</li>
+      <li data-step="3"><span>3</span>导出和生成</li>
+    </ol>
+    <div class="workflow-actions">
+      <button id="step-back" class="button secondary" type="button" hidden>上一步</button>
+      <button id="step-next" class="button solid" type="button" hidden>下一步</button>
+    </div>
+  </nav>
+  <p id="workflow-status" class="feedback workflow-feedback" role="status" hidden></p>
+
+  <main>
+    <section id="import-step" class="step-page" aria-labelledby="import-title" hidden>
+      <div class="step-heading">
+        <div><h2 id="import-title">导入抖音视频</h2><p class="muted">一行一个链接。直接粘贴多条链接或整段分享文案，会自动拆行。</p></div>
+        <div class="section-heading"><span class="count" id="link-count">0</span> 条链接</div>
+      </div>
+      <div class="table-panel">
+        <table class="import-table">
+          <thead><tr><th scope="col">抖音链接或分享文案</th><th scope="col">作品名</th><th scope="col">下载状态</th><th scope="col">操作</th></tr></thead>
+          <tbody id="link-rows"></tbody>
+        </table>
+      </div>
+      <div class="step-actions">
+        <button id="add-link" class="button secondary" type="button">添加一行</button>
+        <button id="import-all" class="button solid" type="button">下载全部</button>
+      </div>
+      <p id="import-status" class="feedback" role="status" hidden></p>
+      <div class="import-library">
+        <div class="section-heading"><h2>已下载</h2><span id="import-library-count" class="count">0</span></div>
+        <div id="import-library-list" class="import-library-list"></div>
+      </div>
+    </section>
+
+    <section id="edit-step" class="workspace" aria-label="选段和预览" hidden>
+      <aside id="library" class="library" aria-label="素材库">
+        <div class="section-heading"><h2>素材库</h2><span id="video-count" class="count">0</span></div>
+        <div id="videos" class="videos"></div>
+      </aside>
+      <section class="editor" aria-label="原片和时间轴">
+        <div class="editor-heading">
+          <div class="current">
+            <h2 id="video-title">原片</h2>
+            <p id="video-meta" class="mono"></p>
+          </div>
+          <button id="next-video" class="button secondary" type="button" disabled>下一个视频</button>
+        </div>
+        <div class="stage">
+          <div id="stage-empty" class="stage-empty">
+            <div class="empty-frame" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <p>选择一个视频开始选片</p>
+          </div>
+          <video id="player" playsinline preload="metadata" hidden aria-label="原片"></video>
+          <img id="frame-preview" class="frame-preview" alt="" hidden>
+        </div>
+        <section id="controls" class="control-panel" aria-label="时间轴">
+          <div class="transport">
+            <div class="transport-buttons">
+              <button id="play" class="button secondary" type="button" disabled>播放</button>
+              <button id="back-frame" class="button secondary" type="button" disabled>前一帧</button>
+              <button id="forward-frame" class="button secondary" type="button" disabled>后一帧</button>
+            </div>
+            <div class="time-group">
+              <label for="jump" class="sr-only">输入秒数定位</label>
+              <input id="jump" class="mono" type="text" inputmode="decimal" value="0.000" disabled>
+              <span id="total-time" class="mono muted">/ 0.000 秒</span>
+            </div>
+          </div>
+          <div class="ruler mono" id="ruler" aria-hidden="true"></div>
+          <div id="track" class="track">
+            <img id="filmstrip" alt="" hidden>
+            <div id="ranges" class="ranges" aria-hidden="true"></div>
+            <div id="playhead" class="playhead" aria-hidden="true"></div>
+            <input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="时间轴"
+                   title="按住停一下，左键不松往上拖，可进入细分时间轴" disabled>
+          </div>
+          <section id="fine-panel" class="fine-panel" aria-label="细分时间轴" hidden>
+            <div class="fine-heading">
+              <strong>细分时间轴</strong>
+              <span id="fine-time" class="mono"></span>
+              <button id="fine-slow" class="bare" type="button">¼ 倍慢放</button>
+            </div>
+            <div class="fine-strip">
+              <img id="fine-images" alt="" hidden>
+              <div id="fine-playhead" class="playhead" aria-hidden="true"></div>
+              <input id="fine-input" type="range" step="0.001" aria-label="细分时间轴进度">
+            </div>
+            <div class="fine-labels mono"><span id="fine-start"></span><span id="fine-end"></span></div>
+          </section>
+          <div class="marks">
+            <div class="mark-buttons">
+              <button id="mark-in" class="button secondary" type="button" disabled><span>设入点</span> <kbd>I</kbd></button>
+              <button id="mark-out" class="button solid" type="button" disabled>设出点并存段 <kbd>O</kbd></button>
+            </div>
+            <div id="pending" class="mono muted">入点未设置</div>
+          </div>
+          <p id="editor-status" class="feedback" role="status" hidden></p>
+        </section>
+      </section>
+      <aside class="selection" aria-label="拼接预览和片段排序">
+        <section class="sequence-panel">
+          <div class="section-heading"><h2>拼接预览</h2><span class="mono count" id="sequence-duration">0.000 秒</span></div>
+          <div id="sequence-screen" class="sequence-screen">
+            <video id="sequence-player" playsinline preload="auto" aria-label="拼接预览" hidden></video>
+            <p id="sequence-empty" class="muted">保存一段后，预览会出现在这里。</p>
+          </div>
+          <div id="sequence-controls" class="sequence-controls" hidden>
+            <div class="sequence-progress">
+              <input id="sequence-progress" type="range" min="0" max="0" step="0.001" value="0" aria-label="拼接预览进度">
+              <span id="sequence-time" class="mono muted">0.000 / 0.000</span>
+            </div>
+            <div class="sequence-buttons">
+              <button id="sequence-back" class="button secondary" type="button" aria-label="后退 3 秒">−3 秒</button>
+              <button id="sequence-play" class="button secondary" type="button">播放</button>
+              <button id="sequence-forward" class="button secondary" type="button" aria-label="快进 3 秒">+3 秒</button>
+              <select id="sequence-speed" aria-label="拼接预览倍速">
+                <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option>
+              </select>
+            </div>
+          </div>
+          <p id="sequence-status" class="feedback" role="status" hidden></p>
+        </section>
+        <div class="section-heading selection-heading"><h2>已选片段</h2><span class="count" id="segment-count">0</span>
+          <button id="reset-order" class="bare" type="button" hidden>恢复时间顺序</button></div>
+        <p class="muted selection-help">拖动片段可调整拼接顺序。</p>
+        <div id="segments" class="segments"></div>
+        <p id="segments-empty" class="muted placeholder">本视频还没有选段。</p>
+      </aside>
+    </section>
+
+    <section id="generate-step" class="step-page" aria-labelledby="generate-title" hidden>
+      <div class="step-heading">
+        <div><h2 id="generate-title">导出素材并反推提示词</h2><p class="muted">每个视频导出一条拼好的 MP4。提示词使用你本机的 Seedance 2.5 技能。</p></div>
+      </div>
+      <div class="review-layout">
+        <aside class="review-list panel">
+          <h2>已选好素材</h2>
+          <div id="generation-videos" class="videos"></div>
+        </aside>
+        <div class="review-main">
+          <div class="panel modes">
+            <div class="mode-row">
+              <label for="current-mode">当前视频</label>
+              <select id="current-mode"><option value="single">逐段出提示词</option><option value="merge">合并出一条</option></select>
+              <button id="generate" class="button solid" type="button" disabled>导出并反推当前视频</button>
+            </div>
+            <div class="mode-row">
+              <label for="all-mode">全部待处理</label>
+              <select id="all-mode"><option value="single">逐段出提示词</option><option value="merge">合并出一条</option></select>
+              <button id="generate-all" class="button secondary" type="button" disabled>导出并反推全部</button>
+            </div>
+            <p class="muted generation-help">Codex 根据导出素材的有序关键帧反推画面。批量合并时，每个原视频各出一条。</p>
+          </div>
+          <div class="panel results">
+            <div class="section-heading"><h2 id="result-title">导出与提示词</h2></div>
+            <p id="job-status" class="feedback" role="status" hidden></p>
+            <div id="result" hidden></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
