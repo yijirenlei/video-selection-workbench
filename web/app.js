@@ -10,6 +10,9 @@ const sequencePlayer = byId("sequence-player");
 const sequenceProgress = byId("sequence-progress");
 const finePanel = byId("fine-panel");
 const fineInput = byId("fine-input");
+const fineMark = byId("fine-mark");
+const hoverPlayer = byId("segment-hover-video");
+const productDialog = byId("product-dialog");
 const track = byId("track");
 const pending = new Map();
 const jobs = new Map();
@@ -37,6 +40,10 @@ let scrubAnimation = 0;
 let scrubIndex = null;
 let slowUntil = null;
 let dragIndex = null;
+let hoverTimer;
+let hoveredClip = null;
+let replacement = null;
+let productBusy = false;
 
 const videoAPI = (video, action) => `/api/videos/${video.id}/${action}`;
 const jobFile = (job, filename) => `/api/jobs/${job.id}/${filename}`;
@@ -50,11 +57,14 @@ const sameSelection = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const running = (job) => job && ["queued", "working"].includes(job.status);
 const jobsFor = (video) => [...jobs.values()].filter((job) => job.video === video?.id);
 const chosenMode = () => byId("current-mode").value;
+const replacing = () => byId("replace-product").value === "yes";
+const requestedProduct = () => replacing() ? replacement?.id ?? null : null;
+const sameProduct = (job) => (job.productId ?? null) === requestedProduct();
 const completeForMode = (video, mode) => jobsFor(video).some(
-  (job) => job.mode === mode && job.status === "done" && sameSelection(job.selection, ordered(video))
+  (job) => job.mode === mode && sameProduct(job) && job.status === "done" && sameSelection(job.selection, ordered(video))
 );
 const busyForMode = (video, mode) => jobsFor(video).some(
-  (job) => job.mode === mode && running(job) && sameSelection(job.selection, ordered(video))
+  (job) => job.mode === mode && sameProduct(job) && running(job) && sameSelection(job.selection, ordered(video))
 );
 
 async function api(path, body) {
@@ -123,6 +133,8 @@ function updateCursor(index) {
   byId("pending").textContent = draft === undefined ? "入点未设置" : `入点 ${frameLabel(draft)} 秒`;
   byId("mark-out").disabled = stage !== 2 || draft === undefined || saving;
   byId("mark-in").querySelector("span").textContent = draft === undefined ? "设入点" : "取消入点";
+  fineMark.textContent = draft === undefined ? "设入点" : "设出点并存段";
+  fineMark.disabled = saving;
   paintFineCursor();
   if (draft !== undefined) paintRanges();
 }
@@ -359,6 +371,7 @@ function drawLibrary() {
 }
 
 function drawSegments() {
+  closeClipHover();
   const list = byId("segments");
   const segments = ordered(active);
   list.replaceChildren();
@@ -370,6 +383,14 @@ function drawSegments() {
     const card = node("article", "segment");
     card.draggable = true;
     card.dataset.index = index;
+    card.addEventListener("pointerenter", (event) => {
+      if (event.pointerType === "mouse") hoverSelected(index, card);
+    });
+    card.addEventListener("pointerleave", closeClipHover);
+    card.addEventListener("click", (event) => {
+      if (!event.target.closest("button")) previewSelected(index, false);
+    });
+    card.title = "点击定位这段首帧";
     const title = node("header");
     const handle = node("span", "grip", "⠿");
     handle.setAttribute("aria-hidden", "true");
@@ -380,7 +401,7 @@ function drawSegments() {
     const next = smallButton("下移", () => reorder(index, index + 1));
     previous.disabled = !index;
     next.disabled = index === segments.length - 1;
-    actions.append(smallButton("播放这段", () => previewSelected(index)), smallButton("定位入点", () => seekFrame(segment.start)), previous, next,
+    actions.append(smallButton("播放这段", () => previewSelected(index)), smallButton("定位首帧", () => previewSelected(index, false)), previous, next,
       smallButton("移除", () => saveSegments(active, segments.filter((_, i) => i !== index)), "remove"));
     card.append(title, actions);
     list.append(card);
@@ -439,6 +460,7 @@ byId("segments").addEventListener("drop", (event) => {
 byId("segments").addEventListener("dragend", clearDrag);
 
 function clearSequence() {
+  closeClipHover();
   previewRevision++;
   clearTimeout(previewTimer);
   sequenceReady = false;
@@ -455,6 +477,7 @@ function clearSequence() {
 }
 
 function queueSequence(offset = 0) {
+  closeClipHover();
   const video = active;
   if (stage !== 2 || !video || !ordered(video).length) {
     clearSequence();
@@ -487,7 +510,7 @@ function queueSequence(offset = 0) {
         if (pendingSequenceClip !== null) {
           const selection = pendingSequenceClip;
           pendingSequenceClip = null;
-          previewSelected(selection);
+          previewSelected(selection.index, selection.play);
         }
       };
       if (sequencePlayer.getAttribute("src") === url && sequencePlayer.readyState >= 1) show();
@@ -538,20 +561,86 @@ function toggleSequence() {
   }
 }
 
-function previewSelected(index) {
-  if (stage !== 2 || !times.length) return;
+function selectionTimes(index) {
   const list = ordered(active);
-  if (!list[index]) return;
-  seekFrame(list[index].start);
+  if (!times.length || !list[index]) return null;
+  const start = list.slice(0, index).reduce((sum, item) => sum + spanDuration(item), 0);
+  return {start, end: start + spanDuration(list[index]), source: list[index].start};
+}
+
+function closeClipHover() {
+  clearTimeout(hoverTimer);
+  hoveredClip = null;
+  hoverPlayer.pause();
+  byId("segment-hover").hidden = true;
+}
+
+function hoverSelected(index, card) {
+  closeClipHover();
+  if (stage !== 2 || !sequenceReady || dragIndex !== null) return;
+  hoverTimer = setTimeout(() => {
+    const range = selectionTimes(index);
+    if (!range || !card.isConnected || !sequenceReady) return;
+    hoveredClip = {...range, end: Math.min(range.end, sequencePlayer.duration)};
+    const target = hoveredClip;
+    const popup = byId("segment-hover");
+    const bounds = card.getBoundingClientRect();
+    const height = Math.min(230, 155 * sequencePlayer.videoHeight / sequencePlayer.videoWidth);
+    const width = Math.min(210, height * sequencePlayer.videoWidth / sequencePlayer.videoHeight);
+    popup.style.width = `${width}px`;
+    popup.style.left = `${clamp(bounds.left > width + 12 ? bounds.left - width - 8 : bounds.right - width,
+                                8, window.innerWidth - width - 8)}px`;
+    popup.style.top = `${clamp(bounds.top, 8, window.innerHeight - height - 12)}px`;
+    const show = () => {
+      if (hoveredClip !== target) return;
+      hoverPlayer.currentTime = target.start;
+      popup.hidden = false;
+      hoverPlayer.play().catch(() => { /* The first frame still previews the selection. */ });
+    };
+    const source = sequencePlayer.getAttribute("src");
+    if (hoverPlayer.getAttribute("src") === source && hoverPlayer.readyState >= 1) show();
+    else {
+      hoverPlayer.addEventListener("loadedmetadata", show, {once: true});
+      hoverPlayer.src = source;
+    }
+  }, 210);
+}
+
+function loopHover(second) {
+  if (hoveredClip && second >= hoveredClip.end - .003) {
+    hoverPlayer.currentTime = hoveredClip.start;
+    if (hoverPlayer.ended) hoverPlayer.play().catch(() => {});
+  }
+}
+
+function hoverFrame(_now, frame) {
+  if (!hoveredClip || hoverPlayer.paused) return;
+  loopHover(frame.mediaTime);
+  hoverPlayer.requestVideoFrameCallback(hoverFrame);
+}
+
+hoverPlayer.addEventListener("play", () => hoverPlayer.requestVideoFrameCallback?.(hoverFrame));
+hoverPlayer.addEventListener("timeupdate", () => {
+  if (!hoverPlayer.requestVideoFrameCallback) loopHover(hoverPlayer.currentTime);
+});
+hoverPlayer.addEventListener("ended", () => loopHover(hoverPlayer.duration));
+window.addEventListener("scroll", closeClipHover, {passive: true});
+window.addEventListener("resize", closeClipHover);
+
+function previewSelected(index, play = true) {
+  if (stage !== 2) return;
+  const range = selectionTimes(index);
+  if (!range) return;
+  closeClipHover();
+  seekFrame(range.source);
   if (!sequenceReady) {
-    pendingSequenceClip = index;
+    pendingSequenceClip = {index, play};
     return;
   }
-  const start = list.slice(0, index).reduce((sum, item) => sum + spanDuration(item), 0);
-  const duration = spanDuration(list[index]);
-  sequenceLimit = {start, end: Math.min(start + duration, sequencePlayer.duration)};
-  seekSequence(start);
-  sequencePlayer.play().catch(() => status("sequence-status", "已定位到选段。点播放即可预览。"));
+  sequencePlayer.pause();
+  sequenceLimit = play ? {start: range.start, end: Math.min(range.end, sequencePlayer.duration)} : null;
+  seekSequence(range.start);
+  if (play) sequencePlayer.play().catch(() => status("sequence-status", "已定位到选段。点播放即可预览。"));
 }
 
 function finishSequenceClip(second) {
@@ -653,6 +742,7 @@ async function saveSegments(video, segments, manualOrder = Boolean(video?.manual
   saving = true;
   drawNavigation();
   byId("mark-out").disabled = true;
+  fineMark.disabled = true;
   try {
     const result = await api(videoAPI(video, "segments"), {segments, manualOrder});
     video.segments = result.segments;
@@ -669,6 +759,7 @@ async function saveSegments(video, segments, manualOrder = Boolean(video?.manual
   } finally {
     saving = false;
     drawNavigation();
+    drawJob();
     if (times.length) updateCursor(frameIndex);
     byId("reset-order").disabled = false;
   }
@@ -828,7 +919,7 @@ function endSlowPreview() {
   if (slowUntil === null) return;
   slowUntil = null;
   player.playbackRate = 1;
-  byId("fine-slow").textContent = "¼ 倍慢放";
+  byId("fine-slow").textContent = "慢放";
 }
 
 byId("fine-slow").addEventListener("click", () => {
@@ -842,9 +933,16 @@ byId("fine-slow").addEventListener("click", () => {
   const current = times[frameIndex];
   if (current < start || current >= end - .025) seekFrame(nearestFrame(start));
   slowUntil = end;
-  player.playbackRate = .25;
+  player.playbackRate = Number(byId("fine-speed").value);
   byId("fine-slow").textContent = "暂停慢放";
   player.play().catch(() => endSlowPreview());
+});
+byId("fine-speed").addEventListener("change", (event) => {
+  if (slowUntil !== null) player.playbackRate = Number(event.target.value);
+});
+fineMark.addEventListener("click", () => {
+  if (active && pending.has(active.id)) setOut();
+  else setIn();
 });
 document.addEventListener("pointerdown", (event) => {
   if (!mainDrag && !track.contains(event.target) && !finePanel.contains(event.target)) closeFineWindow();
@@ -976,6 +1074,7 @@ async function importRows(rows) {
       if (result.cached) cached++;
       else imported++;
       drawLibrary();
+      if (stage === 2 && !active) selectVideo(video);
     } catch (error) {
       row.status = "error";
       row.error = error.message;
@@ -994,8 +1093,8 @@ function currentResult() {
   const mode = chosenMode();
   const available = jobsFor(active);
   const matching = available.filter((job) => sameSelection(job.selection, ordered(active)));
-  return matching.findLast((job) => job.mode === mode)
-    || available.findLast((job) => job.mode === mode)
+  return matching.findLast((job) => job.mode === mode && sameProduct(job))
+    || available.findLast((job) => job.mode === mode && sameProduct(job))
     || available.findLast((job) => job.status === "done");
 }
 
@@ -1004,12 +1103,13 @@ function drawJob() {
   const job = currentResult();
   const mode = chosenMode();
   const allMode = byId("all-mode").value;
-  const old = job && (!sameSelection(job.selection, ordered(active)) || job.mode !== mode);
+  const old = job && (!sameSelection(job.selection, ordered(active)) || job.mode !== mode || !sameProduct(job));
   byId("result-title").textContent = active ? active.title : "导出与提示词";
-  byId("generate").disabled = !active?.segments.length || busyForMode(active, mode) || enqueuing;
-  byId("generate-all").disabled = enqueuing || !videos.some((video) => video.segments.length
+  const needsProduct = replacing() && !replacement;
+  byId("generate").disabled = needsProduct || !active?.segments.length || busyForMode(active, mode) || enqueuing;
+  byId("generate-all").disabled = needsProduct || enqueuing || !videos.some((video) => video.segments.length
     && !busyForMode(video, allMode) && !completeForMode(video, allMode));
-  status("job-status", job ? (old ? "这是上一次结果。当前顺序或生成方式已调整。" : job.message)
+  status("job-status", job ? (old ? "这是上一次结果。当前选段、生成方式或产品已调整。" : job.message)
     : "选择生成方式后即可导出。", job?.status === "error" && !old);
   const stamp = JSON.stringify([job?.id, job?.status, job?.entries, job?.exportJob]);
   if (resultStamp === stamp) return;
@@ -1066,12 +1166,12 @@ async function refreshJobs() {
 }
 
 async function enqueue(scope) {
-  if (stage !== 3 || enqueuing) return;
+  if (stage !== 3 || enqueuing || (replacing() && !replacement)) return;
   enqueuing = true;
   drawJob();
   const mode = byId(scope === "all" ? "all-mode" : "current-mode").value;
   try {
-    const result = await api("/api/generate", {scope, mode, video: active?.id});
+    const result = await api("/api/generate", {scope, mode, video: active?.id, productId: requestedProduct()});
     for (const job of result.jobs) jobs.set(job.id, job);
     if (scope === "all" && result.jobs.length) {
       byId("current-mode").value = mode;
@@ -1095,9 +1195,8 @@ function drawNavigation() {
   const next = byId("step-next");
   back.hidden = stage < 2;
   next.hidden = stage === 0 || stage === 3;
-  back.disabled = changingStep || saving;
-  next.disabled = changingStep || saving || importing || !videos.length
-    || (stage === 2 && !videos.some((video) => video.segments.length));
+  back.disabled = changingStep;
+  next.disabled = changingStep;
   back.textContent = stage === 3 ? "返回选段" : "返回导入";
   next.textContent = stage === 1 ? "下一步 · 选段" : "下一步 · 导出";
 }
@@ -1130,11 +1229,7 @@ function displayStage() {
 }
 
 async function changeStep(target) {
-  if (changingStep || Math.abs(stage - target) !== 1) return;
-  if (stage === 2 && target === 3 && pending.size) {
-    status("workflow-status", "还有一个入点没设出点。请补完或取消入点后再继续。", true);
-    return;
-  }
+  if (changingStep || stage === target || target < 1 || target > 3) return;
   changingStep = true;
   drawNavigation();
   try {
@@ -1151,6 +1246,126 @@ async function changeStep(target) {
   }
 }
 
+const productKey = "shotdesk-product-v1";
+
+function drawProduct() {
+  const enabled = replacing();
+  const label = byId("product-active");
+  byId("edit-product").hidden = !enabled;
+  label.hidden = !enabled;
+  label.textContent = replacement?.name || "请选择替换产品";
+  drawJob();
+}
+
+function selectProduct(product) {
+  replacement = product;
+  try {
+    sessionStorage.setItem(productKey, product.id);
+  } catch { /* The current page still works. */ }
+  byId("replace-product").value = "yes";
+  if (productDialog.open) productDialog.close();
+  drawProduct();
+  drawLibrary();
+}
+
+async function openProduct() {
+  const history = byId("product-history");
+  history.replaceChildren(new Option("选择已保存产品", ""));
+  byId("use-history").disabled = true;
+  byId("product-form").reset();
+  byId("product-files-list").textContent = "";
+  status("product-status");
+  productDialog.showModal();
+  try {
+    const {products} = await api("/api/products");
+    for (const item of products) {
+      const date = new Date(item.created).toLocaleDateString("zh-CN");
+      history.add(new Option(`${item.name} · ${date}`, item.id));
+    }
+  } catch (error) {
+    status("product-status", error.message, true);
+  }
+}
+
+function readProductFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({name: file.name, data: reader.result.split(",", 2)[1]});
+    reader.onerror = () => reject(new Error(`无法读取 ${file.name}。`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function submitProduct(save) {
+  if (productBusy) return;
+  const files = [...byId("product-files").files];
+  if (files.length > 8 || files.some((file) => file.size > 8 * 1024 ** 2)
+      || files.reduce((sum, file) => sum + file.size, 0) > 24 * 1024 ** 2) {
+    status("product-status", "最多 8 个附件，每个 8 MB，合计 24 MB。", true);
+    return;
+  }
+  const name = byId("product-name").value.trim();
+  if (!name) {
+    status("product-status", "先填写新产品名。", true);
+    byId("product-name").focus();
+    return;
+  }
+  const notes = byId("product-notes").value;
+  productBusy = true;
+  for (const id of ["save-product", "use-product", "close-product", "use-history"]) byId(id).disabled = true;
+  status("product-status", "正在读取产品资料…");
+  try {
+    const attachments = await Promise.all(files.map(readProductFile));
+    selectProduct(await api("/api/products", {name, notes, files: attachments, save}));
+  } catch (error) {
+    status("product-status", error.message, true);
+  } finally {
+    productBusy = false;
+    for (const id of ["save-product", "use-product", "close-product"]) byId(id).disabled = false;
+    byId("use-history").disabled = !byId("product-history").value;
+  }
+}
+
+byId("replace-product").addEventListener("change", () => {
+  drawProduct();
+  drawLibrary();
+  if (replacing()) openProduct();
+  else {
+    try { sessionStorage.removeItem(productKey); } catch {}
+  }
+});
+byId("edit-product").addEventListener("click", openProduct);
+byId("close-product").addEventListener("click", () => productDialog.close());
+productDialog.addEventListener("cancel", (event) => {
+  if (productBusy) event.preventDefault();
+});
+productDialog.addEventListener("close", () => {
+  if (!replacement) byId("replace-product").value = "no";
+  drawProduct();
+});
+byId("product-history").addEventListener("change", (event) => {
+  byId("use-history").disabled = productBusy || !event.target.value;
+});
+byId("use-history").addEventListener("click", async () => {
+  try {
+    selectProduct(await api(`/api/products/${byId("product-history").value}`));
+  } catch (error) {
+    status("product-status", error.message, true);
+  }
+});
+byId("product-files").addEventListener("change", (event) => {
+  byId("product-files-list").textContent = [...event.target.files].map((file) => file.name).join("、");
+});
+byId("product-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitProduct(true);
+});
+byId("use-product").addEventListener("click", () => submitProduct(false));
+try {
+  const savedProductId = sessionStorage.getItem(productKey);
+  if (savedProductId) api(`/api/products/${savedProductId}`).then(selectProduct).catch(() => {});
+} catch { /* The current page still works. */ }
+
 byId("add-link").addEventListener("click", () => {
   linkRows.push(newRow());
   saveRows();
@@ -1158,6 +1373,9 @@ byId("add-link").addEventListener("click", () => {
   byId("link-rows").querySelector("tr:last-child textarea")?.focus();
 });
 byId("import-all").addEventListener("click", () => importRows([...linkRows]));
+for (const button of document.querySelectorAll("[data-step]")) {
+  button.addEventListener("click", () => changeStep(Number(button.dataset.step)));
+}
 byId("step-back").addEventListener("click", () => changeStep(stage - 1));
 byId("step-next").addEventListener("click", () => changeStep(stage + 1));
 byId("next-video").addEventListener("click", () => {
